@@ -1,13 +1,14 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const db = require('../config/database');
-const auth = require('../middleware/auth');
+const { v4: uuidv4 } = require("uuid");
+const db = require("../config/database");
+const auth = require("../middleware/auth");
 
 // Listar citas
-router.get('/', async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const { branch_id, stylist_id, date, start_date, end_date, status } = req.query;
+    const { branch_id, stylist_id, date, start_date, end_date, status } =
+      req.query;
     let query = `
       SELECT a.*, u.name as stylist_name, u.color as stylist_color 
       FROM appointments a 
@@ -17,30 +18,29 @@ router.get('/', async (req, res) => {
     const params = [];
 
     if (branch_id) {
-      query += ' AND a.branch_id = ?';
+      query += " AND a.branch_id = ?";
       params.push(branch_id);
     }
     if (stylist_id) {
-      query += ' AND a.stylist_id = ?';
+      query += " AND a.stylist_id = ?";
       params.push(stylist_id);
     }
     if (date) {
-      query += ' AND a.date = ?';
+      query += " AND a.date = ?";
       params.push(date);
     }
     if (start_date && end_date) {
-      query += ' AND a.date BETWEEN ? AND ?';
+      query += " AND a.date BETWEEN ? AND ?";
       params.push(start_date, end_date);
     }
     if (status) {
-      query += ' AND a.status = ?';
+      query += " AND a.status = ?";
       params.push(status);
     }
 
-    query += ' ORDER BY a.date, a.time';
+    query += " ORDER BY a.date, a.time";
     const [rows] = await db.query(query, params);
 
-    // Obtener servicios y productos de cada cita
     for (const appointment of rows) {
       const [services] = await db.query(
         `SELECT aps.*, s.name, s.duration 
@@ -72,7 +72,7 @@ router.get('/', async (req, res) => {
 });
 
 // Obtener una cita
-router.get('/:id', async (req, res) => {
+router.get("/:id", async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT a.*, u.name as stylist_name, u.color as stylist_color 
@@ -81,9 +81,9 @@ router.get('/:id', async (req, res) => {
        WHERE a.id = ?`,
       [req.params.id]
     );
-    
+
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Cita no encontrada' });
+      return res.status(404).json({ error: "Cita no encontrada" });
     }
 
     const appointment = rows[0];
@@ -118,61 +118,123 @@ router.get('/:id', async (req, res) => {
 });
 
 // Crear cita
-router.post('/', async (req, res) => {
+router.post("/", async (req, res) => {
   const connection = await db.getConnection();
+
   try {
     await connection.beginTransaction();
 
-    const { 
-      branch_id, client_id, client_name, client_phone, stylist_id,
-      date, time, duration, services, products, payments,
-      subtotal, discount, total, notes
+    const {
+      branch_id,
+      client_id,
+      client_name,
+      client_phone,
+      stylist_id,
+      date,
+      time,
+      duration,
+      services = [],
+      products = [],
+      payments = [],
+      subtotal,
+      discount,
+      discount_percent,
+      total,
+      notes,
     } = req.body;
 
+    if (!branch_id || !client_id || !stylist_id || !date || !time) {
+      await connection.rollback();
+      return res.status(400).json({
+        error: "Faltan datos obligatorios para crear la cita",
+      });
+    }
+
+    const status = "scheduled";
     const id = uuidv4();
 
-    await connection.query(
-      `INSERT INTO appointments (id, branch_id, client_id, client_name, client_phone, 
-       stylist_id, date, time, duration, subtotal, discount, total, notes) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, branch_id, client_id, client_name, client_phone, stylist_id, 
-       date, time, duration, subtotal, discount, total, notes]
+    let finalClientName = client_name || null;
+    let finalClientPhone = client_phone || null;
+
+    const [clientRows] = await connection.query(
+      "SELECT name, phone FROM clients WHERE id = ?",
+      [client_id]
     );
 
-    // Insertar servicios
-    if (services && services.length > 0) {
-      for (const service of services) {
-        await connection.query(
-          'INSERT INTO appointment_services (id, appointment_id, service_id, price, discount) VALUES (UUID(), ?, ?, ?, ?)',
-          [id, service.service_id, service.price, service.discount || 0]
-        );
-      }
+    if (clientRows.length > 0) {
+      finalClientName = clientRows[0].name;
+      finalClientPhone = clientRows[0].phone;
     }
 
-    // Insertar productos
-    if (products && products.length > 0) {
-      for (const product of products) {
-        await connection.query(
-          'INSERT INTO appointment_products (id, appointment_id, product_id, quantity, price, discount) VALUES (UUID(), ?, ?, ?, ?, ?)',
-          [id, product.product_id, product.quantity, product.price, product.discount || 0]
-        );
-      }
+    finalClientName = finalClientName || "Cliente";
+    finalClientPhone = finalClientPhone || null;
+
+    await connection.query(
+      `INSERT INTO appointments (
+        id, branch_id, client_id, client_name, client_phone,
+        stylist_id, date, time, duration,
+        subtotal, discount, discount_percent, total, status, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        branch_id,
+        client_id,
+        finalClientName,
+        finalClientPhone,
+        stylist_id,
+        date,
+        time,
+        duration,
+        subtotal,
+        discount,
+        discount_percent,
+        total,
+        status,
+        notes,
+      ]
+    );
+    for (const service of services) {
+      await connection.query(
+        `INSERT INTO appointment_services 
+   (id, appointment_id, service_id, price, discount)
+   VALUES (?, ?, ?, ?, ?)`,
+        [uuidv4(), id, service.service_id, service.price, service.discount || 0]
+      );
     }
 
-    // Insertar pagos
-    if (payments && payments.length > 0) {
-      for (const payment of payments) {
-        await connection.query(
-          'INSERT INTO payments (id, reference_type, reference_id, method, amount) VALUES (UUID(), ?, ?, ?, ?)',
-          ['appointment', id, payment.method, payment.amount]
-        );
-      }
+    for (const product of products) {
+      await connection.query(
+        `INSERT INTO appointment_products
+         (id, appointment_id, product_id, quantity, price, discount)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(),
+          id,
+          product.product_id,
+          product.quantity,
+          product.price,
+          product.discount || 0,
+        ]
+      );
+    }
+
+    for (const payment of payments) {
+      await connection.query(
+        `INSERT INTO payments
+         (id, reference_type, reference_id, method, amount)
+         VALUES (?, ?, ?, ?, ?)`,
+        [uuidv4(), "appointment", id, payment.method, payment.amount]
+      );
     }
 
     await connection.commit();
-    res.status(201).json({ id, message: 'Cita creada exitosamente' });
+    res.status(201).json({
+      id,
+      message: "Cita creada exitosamente",
+    });
   } catch (error) {
     await connection.rollback();
+    console.error("CREATE APPOINTMENT ERROR:", error);
     res.status(500).json({ error: error.message });
   } finally {
     connection.release();
@@ -180,61 +242,131 @@ router.post('/', async (req, res) => {
 });
 
 // Actualizar cita
-router.put('/:id', auth, async (req, res) => {
+router.put("/:id", auth, async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
 
-    const { 
-      client_id, client_name, client_phone, stylist_id,
-      date, time, duration, services, products, payments,
-      subtotal, discount, total, status, notes
+    const {
+      client_id,
+      client_name,
+      client_phone,
+      stylist_id,
+      date,
+      time,
+      duration,
+      services,
+      products,
+      payments,
+      subtotal,
+      discount,
+      discount_percent,
+      total,
+      notes,
     } = req.body;
 
-    await connection.query(
-      `UPDATE appointments SET client_id = ?, client_name = ?, client_phone = ?, 
-       stylist_id = ?, date = ?, time = ?, duration = ?, subtotal = ?, 
-       discount = ?, total = ?, status = ?, notes = ? WHERE id = ?`,
-      [client_id, client_name, client_phone, stylist_id, date, time, duration,
-       subtotal, discount, total, status, notes, req.params.id]
+    let finalClientName = client_name || null;
+    let finalClientPhone = client_phone || null;
+
+    const [clientRows] = await connection.query(
+      "SELECT name, phone FROM clients WHERE id = ?",
+      [client_id]
     );
 
-    // Actualizar servicios
-    await connection.query('DELETE FROM appointment_services WHERE appointment_id = ?', [req.params.id]);
+    if (clientRows.length > 0) {
+      finalClientName = clientRows[0].name;
+      finalClientPhone = clientRows[0].phone;
+    }
+
+    await connection.query(
+      `UPDATE appointments SET 
+    client_id = ?, 
+    client_name = ?, 
+    client_phone = ?, 
+    stylist_id = ?, 
+    date = ?, 
+    time = ?, 
+    duration = ?, 
+    subtotal = ?, 
+    discount = ?, 
+    discount_percent = ?,
+    total = ?, 
+    notes = ? 
+   WHERE id = ?`,
+      [
+        client_id,
+        finalClientName,
+        finalClientPhone,
+        stylist_id,
+        date,
+        time,
+        duration,
+        subtotal,
+        discount,
+        discount_percent,
+        total,
+        notes,
+        req.params.id,
+      ]
+    );
+
+    await connection.query(
+      "DELETE FROM appointment_services WHERE appointment_id = ?",
+      [req.params.id]
+    );
     if (services && services.length > 0) {
       for (const service of services) {
         await connection.query(
-          'INSERT INTO appointment_services (id, appointment_id, service_id, price, discount) VALUES (UUID(), ?, ?, ?, ?)',
-          [req.params.id, service.service_id, service.price, service.discount || 0]
+          `INSERT INTO appointment_services 
+          (id, appointment_id, service_id, price, discount)
+          VALUES (?, ?, ?, ?, ?)`,
+          [
+            uuidv4(),
+            req.params.id,
+            service.service_id,
+            service.price,
+            service.discount || 0,
+          ]
         );
       }
     }
 
-    // Actualizar productos
-    await connection.query('DELETE FROM appointment_products WHERE appointment_id = ?', [req.params.id]);
+    await connection.query(
+      "DELETE FROM appointment_products WHERE appointment_id = ?",
+      [req.params.id]
+    );
     if (products && products.length > 0) {
       for (const product of products) {
         await connection.query(
-          'INSERT INTO appointment_products (id, appointment_id, product_id, quantity, price, discount) VALUES (UUID(), ?, ?, ?, ?, ?)',
-          [req.params.id, product.product_id, product.quantity, product.price, product.discount || 0]
+          "INSERT INTO appointment_products (id, appointment_id, product_id, quantity, price, discount) VALUES (UUID(), ?, ?, ?, ?, ?)",
+          [
+            req.params.id,
+            product.product_id,
+            product.quantity,
+            product.price,
+            product.discount || 0,
+          ]
         );
       }
     }
 
-    // Actualizar pagos
-    await connection.query("DELETE FROM payments WHERE reference_type = 'appointment' AND reference_id = ?", [req.params.id]);
+    await connection.query(
+      "DELETE FROM payments WHERE reference_type = 'appointment' AND reference_id = ?",
+      [req.params.id]
+    );
     if (payments && payments.length > 0) {
       for (const payment of payments) {
         await connection.query(
-          'INSERT INTO payments (id, reference_type, reference_id, method, amount) VALUES (UUID(), ?, ?, ?, ?)',
-          ['appointment', req.params.id, payment.method, payment.amount]
+          "INSERT INTO payments (id, reference_type, reference_id, method, amount) VALUES (UUID(), ?, ?, ?, ?)",
+          ["appointment", req.params.id, payment.method, payment.amount]
         );
       }
     }
 
     await connection.commit();
-    res.json({ message: 'Cita actualizada exitosamente' });
+    res.json({ message: "Cita actualizada exitosamente" });
   } catch (error) {
+    console.log(error);
     await connection.rollback();
     res.status(500).json({ error: error.message });
   } finally {
@@ -243,29 +375,33 @@ router.put('/:id', auth, async (req, res) => {
 });
 
 // Actualizar estado de cita
-router.patch('/:id/status', auth, async (req, res) => {
+router.patch("/:id/status", auth, async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    
-    const { status } = req.body;
-    await connection.query('UPDATE appointments SET status = ? WHERE id = ?', [status, req.params.id]);
 
-    // Si se completa, descontar inventario
-    if (status === 'completed') {
+    const { status } = req.body;
+    await connection.query("UPDATE appointments SET status = ? WHERE id = ?", [
+      status,
+      req.params.id,
+    ]);
+
+    if (status === "completed") {
       const [products] = await connection.query(
-        'SELECT product_id, quantity FROM appointment_products WHERE appointment_id = ?',
+        "SELECT product_id, quantity FROM appointment_products WHERE appointment_id = ?",
         [req.params.id]
       );
 
       for (const item of products) {
         await connection.query(
-          'UPDATE products SET stock = stock - ? WHERE id = ?',
+          "UPDATE products SET stock = stock - ? WHERE id = ?",
           [item.quantity, item.product_id]
         );
-        
-        // Registrar movimiento
-        const [appointment] = await connection.query('SELECT branch_id FROM appointments WHERE id = ?', [req.params.id]);
+
+        const [appointment] = await connection.query(
+          "SELECT branch_id FROM appointments WHERE id = ?",
+          [req.params.id]
+        );
         await connection.query(
           `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason) 
            VALUES (UUID(), ?, ?, 'out', ?, 'Venta en cita')`,
@@ -275,7 +411,7 @@ router.patch('/:id/status', auth, async (req, res) => {
     }
 
     await connection.commit();
-    res.json({ message: 'Estado actualizado' });
+    res.json({ message: "Estado actualizado" });
   } catch (error) {
     await connection.rollback();
     res.status(500).json({ error: error.message });
@@ -285,10 +421,10 @@ router.patch('/:id/status', auth, async (req, res) => {
 });
 
 // Eliminar cita
-router.delete('/:id', auth, async (req, res) => {
+router.delete("/:id", auth, async (req, res) => {
   try {
-    await db.query('DELETE FROM appointments WHERE id = ?', [req.params.id]);
-    res.json({ message: 'Cita eliminada' });
+    await db.query("DELETE FROM appointments WHERE id = ?", [req.params.id]);
+    res.json({ message: "Cita eliminada" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
