@@ -4,23 +4,18 @@ const { v4: uuidv4 } = require("uuid");
 const db = require("../config/database");
 const auth = require("../middleware/auth");
 
-// Listar citas
-router.get("/", async (req, res) => {
+// Listar citas (por sucursal)
+router.get("/", auth, async (req, res) => {
   try {
-    const { branch_id, stylist_id, date, start_date, end_date, status } =
-      req.query;
+    const { stylist_id, date, start_date, end_date, status } = req.query;
     let query = `
       SELECT a.*, u.name as stylist_name, u.color as stylist_color 
       FROM appointments a 
       LEFT JOIN users u ON a.stylist_id = u.id 
-      WHERE 1=1
+      WHERE a.branch_id = ?
     `;
-    const params = [];
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += " AND a.branch_id = ?";
-      params.push(branch_id);
-    }
     if (stylist_id) {
       query += " AND a.stylist_id = ?";
       params.push(stylist_id);
@@ -71,15 +66,15 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Obtener una cita
-router.get("/:id", async (req, res) => {
+// Obtener una cita (validar sucursal)
+router.get("/:id", auth, async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT a.*, u.name as stylist_name, u.color as stylist_color 
        FROM appointments a 
        LEFT JOIN users u ON a.stylist_id = u.id 
-       WHERE a.id = ?`,
-      [req.params.id]
+       WHERE a.id = ? AND a.branch_id = ?`,
+      [req.params.id, req.user.branch_id]
     );
 
     if (rows.length === 0) {
@@ -118,14 +113,13 @@ router.get("/:id", async (req, res) => {
 });
 
 // Crear cita
-router.post("/", async (req, res) => {
+router.post("/", auth, async (req, res) => {
   const connection = await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
     const {
-      branch_id,
       client_id,
       client_name,
       client_phone,
@@ -143,7 +137,9 @@ router.post("/", async (req, res) => {
       notes,
     } = req.body;
 
-    if (!branch_id || !client_id || !stylist_id || !date || !time) {
+    const branch_id = req.user.branch_id;
+
+    if (!client_id || !stylist_id || !date || !time) {
       await connection.rollback();
       return res.status(400).json({
         error: "Faltan datos obligatorios para crear la cita",
@@ -157,8 +153,8 @@ router.post("/", async (req, res) => {
     let finalClientPhone = client_phone || null;
 
     const [clientRows] = await connection.query(
-      "SELECT name, phone FROM clients WHERE id = ?",
-      [client_id]
+      "SELECT name, phone FROM clients WHERE id = ? AND account_id = ?",
+      [client_id, req.user.account_id]
     );
 
     if (clientRows.length > 0) {
@@ -193,11 +189,12 @@ router.post("/", async (req, res) => {
         notes,
       ]
     );
+
     for (const service of services) {
       await connection.query(
         `INSERT INTO appointment_services 
-   (id, appointment_id, service_id, price, discount)
-   VALUES (?, ?, ?, ?, ?)`,
+         (id, appointment_id, service_id, price, discount)
+         VALUES (?, ?, ?, ?, ?)`,
         [uuidv4(), id, service.service_id, service.price, service.discount || 0]
       );
     }
@@ -247,6 +244,17 @@ router.put("/:id", auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    // Verificar que la cita pertenece a la sucursal
+    const [existing] = await connection.query(
+      "SELECT id FROM appointments WHERE id = ? AND branch_id = ?",
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (existing.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Cita no encontrada" });
+    }
+
     const {
       client_id,
       client_name,
@@ -269,8 +277,8 @@ router.put("/:id", auth, async (req, res) => {
     let finalClientPhone = client_phone || null;
 
     const [clientRows] = await connection.query(
-      "SELECT name, phone FROM clients WHERE id = ?",
-      [client_id]
+      "SELECT name, phone FROM clients WHERE id = ? AND account_id = ?",
+      [client_id, req.user.account_id]
     );
 
     if (clientRows.length > 0) {
@@ -280,19 +288,19 @@ router.put("/:id", auth, async (req, res) => {
 
     await connection.query(
       `UPDATE appointments SET 
-    client_id = ?, 
-    client_name = ?, 
-    client_phone = ?, 
-    stylist_id = ?, 
-    date = ?, 
-    time = ?, 
-    duration = ?, 
-    subtotal = ?, 
-    discount = ?, 
-    discount_percent = ?,
-    total = ?, 
-    notes = ? 
-   WHERE id = ?`,
+        client_id = ?, 
+        client_name = ?, 
+        client_phone = ?, 
+        stylist_id = ?, 
+        date = ?, 
+        time = ?, 
+        duration = ?, 
+        subtotal = ?, 
+        discount = ?, 
+        discount_percent = ?,
+        total = ?, 
+        notes = ? 
+       WHERE id = ? AND branch_id = ?`,
       [
         client_id,
         finalClientName,
@@ -307,6 +315,7 @@ router.put("/:id", auth, async (req, res) => {
         total,
         notes,
         req.params.id,
+        req.user.branch_id,
       ]
     );
 
@@ -318,8 +327,8 @@ router.put("/:id", auth, async (req, res) => {
       for (const service of services) {
         await connection.query(
           `INSERT INTO appointment_services 
-          (id, appointment_id, service_id, price, discount)
-          VALUES (?, ?, ?, ?, ?)`,
+           (id, appointment_id, service_id, price, discount)
+           VALUES (?, ?, ?, ?, ?)`,
           [
             uuidv4(),
             req.params.id,
@@ -380,11 +389,22 @@ router.patch("/:id/status", auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    // Verificar que la cita pertenece a la sucursal
+    const [existing] = await connection.query(
+      "SELECT id FROM appointments WHERE id = ? AND branch_id = ?",
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (existing.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Cita no encontrada" });
+    }
+
     const { status } = req.body;
-    await connection.query("UPDATE appointments SET status = ? WHERE id = ?", [
-      status,
-      req.params.id,
-    ]);
+    await connection.query(
+      "UPDATE appointments SET status = ? WHERE id = ? AND branch_id = ?",
+      [status, req.params.id, req.user.branch_id]
+    );
 
     if (status === "completed") {
       const [products] = await connection.query(
@@ -398,14 +418,10 @@ router.patch("/:id/status", auth, async (req, res) => {
           [item.quantity, item.product_id]
         );
 
-        const [appointment] = await connection.query(
-          "SELECT branch_id FROM appointments WHERE id = ?",
-          [req.params.id]
-        );
         await connection.query(
           `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason) 
            VALUES (UUID(), ?, ?, 'out', ?, 'Venta en cita')`,
-          [appointment[0].branch_id, item.product_id, -item.quantity]
+          [req.user.branch_id, item.product_id, -item.quantity]
         );
       }
     }
@@ -423,7 +439,15 @@ router.patch("/:id/status", auth, async (req, res) => {
 // Eliminar cita
 router.delete("/:id", auth, async (req, res) => {
   try {
-    await db.query("DELETE FROM appointments WHERE id = ?", [req.params.id]);
+    const [result] = await db.query(
+      "DELETE FROM appointments WHERE id = ? AND branch_id = ?",
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Cita no encontrada" });
+    }
+
     res.json({ message: "Cita eliminada" });
   } catch (error) {
     res.status(500).json({ error: error.message });
