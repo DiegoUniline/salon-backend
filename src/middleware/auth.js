@@ -9,9 +9,15 @@ const auth = async (req, res, next) => {
     }
 
     const [sessions] = await db.query(
-      `SELECT s.*, u.id as user_id, u.name, u.email, u.role, u.branch_id 
+      `SELECT s.*, u.id as user_id, u.name, u.email, u.role, u.branch_id, u.account_id,
+              sub.id as subscription_id, sub.status as subscription_status, 
+              sub.max_users, sub.max_branches, sub.current_users, sub.current_branches,
+              sub.trial_ends_at, sub.ends_at,
+              p.name as plan_name
        FROM sessions s 
        JOIN users u ON s.user_id = u.id 
+       LEFT JOIN subscriptions sub ON u.account_id = sub.account_id AND sub.status IN ('trial', 'active')
+       LEFT JOIN plans p ON sub.plan_id = p.id
        WHERE s.token = ? AND s.expires_at > NOW()`,
       [token]
     );
