@@ -24,6 +24,7 @@ const dashboardRoutes = require('./routes/dashboard');
 const plansRoutes = require('./routes/plans');
 const subscriptionsRoutes = require('./routes/subscriptions');
 const accountsRoutes = require('./routes/accounts');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -40,6 +41,9 @@ app.use('/api/plans', plansRoutes);
 
 // Rutas de autenticación
 app.use('/api/auth', authRoutes);
+
+// Rutas de SuperAdmin
+app.use('/api/admin', adminRoutes);
 
 // Rutas protegidas
 app.use('/api/accounts', accountsRoutes);
