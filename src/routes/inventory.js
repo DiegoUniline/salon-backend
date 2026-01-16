@@ -4,23 +4,19 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Listar movimientos
-router.get('/movements', async (req, res) => {
+// Listar movimientos (por sucursal)
+router.get('/movements', auth, async (req, res) => {
   try {
-    const { branch_id, product_id, type, start_date, end_date } = req.query;
+    const { product_id, type, start_date, end_date } = req.query;
     let query = `
       SELECT im.*, p.name as product_name, u.name as user_name 
       FROM inventory_movements im 
       LEFT JOIN products p ON im.product_id = p.id 
       LEFT JOIN users u ON im.user_id = u.id 
-      WHERE 1=1
+      WHERE im.branch_id = ?
     `;
-    const params = [];
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += ' AND im.branch_id = ?';
-      params.push(branch_id);
-    }
     if (product_id) {
       query += ' AND im.product_id = ?';
       params.push(product_id);
@@ -42,12 +38,12 @@ router.get('/movements', async (req, res) => {
   }
 });
 
-// Stock actual
-router.get('/stock', async (req, res) => {
+// Stock actual (productos por cuenta)
+router.get('/stock', auth, async (req, res) => {
   try {
-    const { branch_id, low_stock } = req.query;
-    let query = 'SELECT id, name, category, sku, stock, min_stock, price, cost FROM products WHERE active = 1';
-    const params = [];
+    const { low_stock } = req.query;
+    let query = 'SELECT id, name, category, sku, stock, min_stock, price, cost FROM products WHERE active = 1 AND account_id = ?';
+    const params = [req.user.account_id];
 
     if (low_stock === 'true') {
       query += ' AND stock <= min_stock';
@@ -61,8 +57,8 @@ router.get('/stock', async (req, res) => {
   }
 });
 
-// Valor total del inventario
-router.get('/value', async (req, res) => {
+// Valor total del inventario (por cuenta)
+router.get('/value', auth, async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT 
@@ -70,8 +66,8 @@ router.get('/value', async (req, res) => {
         SUM(stock * price) as total_price,
         COUNT(*) as total_products,
         SUM(stock) as total_units
-      FROM products WHERE active = 1
-    `);
+      FROM products WHERE active = 1 AND account_id = ?
+    `, [req.user.account_id]);
     res.json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -84,7 +80,18 @@ router.post('/in', auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    const { branch_id, product_id, quantity, reason, user_id } = req.body;
+    const { product_id, quantity, reason } = req.body;
+
+    // Validar que el producto pertenece a la cuenta
+    const [product] = await connection.query(
+      'SELECT id FROM products WHERE id = ? AND account_id = ?',
+      [product_id, req.user.account_id]
+    );
+
+    if (product.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
 
     await connection.query(
       'UPDATE products SET stock = stock + ? WHERE id = ?',
@@ -94,7 +101,7 @@ router.post('/in', auth, async (req, res) => {
     await connection.query(
       `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason, user_id) 
        VALUES (UUID(), ?, ?, 'in', ?, ?, ?)`,
-      [branch_id, product_id, quantity, reason || 'Entrada manual', user_id]
+      [req.user.branch_id, product_id, quantity, reason || 'Entrada manual', req.user.user_id]
     );
 
     await connection.commit();
@@ -113,7 +120,18 @@ router.post('/out', auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    const { branch_id, product_id, quantity, reason, user_id } = req.body;
+    const { product_id, quantity, reason } = req.body;
+
+    // Validar que el producto pertenece a la cuenta
+    const [product] = await connection.query(
+      'SELECT id FROM products WHERE id = ? AND account_id = ?',
+      [product_id, req.user.account_id]
+    );
+
+    if (product.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
 
     await connection.query(
       'UPDATE products SET stock = stock - ? WHERE id = ?',
@@ -123,7 +141,7 @@ router.post('/out', auth, async (req, res) => {
     await connection.query(
       `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason, user_id) 
        VALUES (UUID(), ?, ?, 'out', ?, ?, ?)`,
-      [branch_id, product_id, -quantity, reason || 'Salida manual', user_id]
+      [req.user.branch_id, product_id, -quantity, reason || 'Salida manual', req.user.user_id]
     );
 
     await connection.commit();
@@ -142,11 +160,20 @@ router.post('/adjustment', auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    const { branch_id, product_id, new_stock, reason, user_id } = req.body;
+    const { product_id, new_stock, reason } = req.body;
 
-    // Obtener stock actual
-    const [product] = await connection.query('SELECT stock FROM products WHERE id = ?', [product_id]);
-    const currentStock = product[0]?.stock || 0;
+    // Validar que el producto pertenece a la cuenta
+    const [product] = await connection.query(
+      'SELECT id, stock FROM products WHERE id = ? AND account_id = ?',
+      [product_id, req.user.account_id]
+    );
+
+    if (product.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    const currentStock = product[0].stock || 0;
     const difference = new_stock - currentStock;
 
     await connection.query(
@@ -157,7 +184,7 @@ router.post('/adjustment', auth, async (req, res) => {
     await connection.query(
       `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason, user_id) 
        VALUES (UUID(), ?, ?, 'adjustment', ?, ?, ?)`,
-      [branch_id, product_id, difference, reason || 'Ajuste de inventario', user_id]
+      [req.user.branch_id, product_id, difference, reason || 'Ajuste de inventario', req.user.user_id]
     );
 
     await connection.commit();
