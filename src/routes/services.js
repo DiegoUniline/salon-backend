@@ -4,12 +4,12 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Listar servicios
-router.get('/', async (req, res) => {
+// Listar servicios (por cuenta)
+router.get('/', auth, async (req, res) => {
   try {
     const { category, active } = req.query;
-    let query = 'SELECT * FROM services WHERE 1=1';
-    const params = [];
+    let query = 'SELECT * FROM services WHERE account_id = ?';
+    const params = [req.user.account_id];
 
     if (category) {
       query += ' AND category = ?';
@@ -28,20 +28,26 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Obtener categorías
-router.get('/categories', async (req, res) => {
+// Obtener categorías (por cuenta)
+router.get('/categories', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT DISTINCT category FROM services WHERE category IS NOT NULL ORDER BY category');
+    const [rows] = await db.query(
+      'SELECT DISTINCT category FROM services WHERE account_id = ? AND category IS NOT NULL ORDER BY category',
+      [req.user.account_id]
+    );
     res.json(rows.map(r => r.category));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Obtener un servicio
-router.get('/:id', async (req, res) => {
+// Obtener un servicio (validar cuenta)
+router.get('/:id', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM services WHERE id = ?', [req.params.id]);
+    const [rows] = await db.query(
+      'SELECT * FROM services WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
+    );
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Servicio no encontrado' });
     }
@@ -58,8 +64,8 @@ router.post('/', auth, async (req, res) => {
     const id = uuidv4();
 
     await db.query(
-      'INSERT INTO services (id, name, category, price, duration, commission) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, name, category, price, duration || 30, commission || 0]
+      'INSERT INTO services (id, name, category, price, duration, commission, account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, name, category, price, duration || 30, commission || 0, req.user.account_id]
     );
 
     res.status(201).json({ id, name, category, price, duration: duration || 30, commission: commission || 0, active: true });
@@ -77,8 +83,8 @@ router.post('/bulk', auth, async (req, res) => {
     for (const service of services) {
       const id = uuidv4();
       await db.query(
-        'INSERT INTO services (id, name, category, price, duration, commission) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, service.name, service.category, service.price, service.duration || 30, service.commission || 0]
+        'INSERT INTO services (id, name, category, price, duration, commission, account_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, service.name, service.category, service.price, service.duration || 30, service.commission || 0, req.user.account_id]
       );
       created.push({ id, ...service });
     }
@@ -95,8 +101,8 @@ router.put('/:id', auth, async (req, res) => {
     const { name, category, price, duration, commission, active } = req.body;
 
     await db.query(
-      'UPDATE services SET name = ?, category = ?, price = ?, duration = ?, commission = ?, active = ? WHERE id = ?',
-      [name, category, price, duration, commission, active ? 1 : 0, req.params.id]
+      'UPDATE services SET name = ?, category = ?, price = ?, duration = ?, commission = ?, active = ? WHERE id = ? AND account_id = ?',
+      [name, category, price, duration, commission, active ? 1 : 0, req.params.id, req.user.account_id]
     );
 
     res.json({ id: req.params.id, name, category, price, duration, commission, active });
@@ -108,7 +114,10 @@ router.put('/:id', auth, async (req, res) => {
 // Eliminar servicio
 router.delete('/:id', auth, async (req, res) => {
   try {
-    await db.query('DELETE FROM services WHERE id = ?', [req.params.id]);
+    await db.query(
+      'DELETE FROM services WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
+    );
     res.json({ message: 'Servicio eliminado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
