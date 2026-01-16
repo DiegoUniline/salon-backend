@@ -4,22 +4,18 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Listar ventas
-router.get('/', async (req, res) => {
+// Listar ventas (por sucursal)
+router.get('/', auth, async (req, res) => {
   try {
-    const { branch_id, date, start_date, end_date } = req.query;
+    const { date, start_date, end_date } = req.query;
     let query = `
       SELECT s.*, u.name as stylist_name 
       FROM sales s 
       LEFT JOIN users u ON s.stylist_id = u.id 
-      WHERE 1=1
+      WHERE s.branch_id = ?
     `;
-    const params = [];
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += ' AND s.branch_id = ?';
-      params.push(branch_id);
-    }
     if (date) {
       query += ' AND s.date = ?';
       params.push(date);
@@ -49,15 +45,15 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Obtener una venta
-router.get('/:id', async (req, res) => {
+// Obtener una venta (validar sucursal)
+router.get('/:id', auth, async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT s.*, u.name as stylist_name 
        FROM sales s 
        LEFT JOIN users u ON s.stylist_id = u.id 
-       WHERE s.id = ?`,
-      [req.params.id]
+       WHERE s.id = ? AND s.branch_id = ?`,
+      [req.params.id, req.user.branch_id]
     );
     
     if (rows.length === 0) {
@@ -87,11 +83,12 @@ router.post('/', auth, async (req, res) => {
     await connection.beginTransaction();
 
     const { 
-      branch_id, stylist_id, client_name, client_phone,
+      stylist_id, client_name, client_phone,
       date, time, items, payments, subtotal, discount, total, notes
     } = req.body;
 
     const id = uuidv4();
+    const branch_id = req.user.branch_id;
 
     await connection.query(
       `INSERT INTO sales (id, branch_id, stylist_id, client_name, client_phone, 
@@ -148,13 +145,22 @@ router.delete('/:id', auth, async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    // Verificar que la venta pertenece a la sucursal
+    const [sale] = await connection.query(
+      'SELECT * FROM sales WHERE id = ? AND branch_id = ?',
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (sale.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Venta no encontrada' });
+    }
+
     // Restaurar inventario
     const [items] = await connection.query(
       "SELECT * FROM sale_items WHERE sale_id = ? AND item_type = 'product'",
       [req.params.id]
     );
-
-    const [sale] = await connection.query('SELECT branch_id FROM sales WHERE id = ?', [req.params.id]);
 
     for (const item of items) {
       await connection.query(
@@ -165,7 +171,7 @@ router.delete('/:id', auth, async (req, res) => {
       await connection.query(
         `INSERT INTO inventory_movements (id, branch_id, product_id, type, quantity, reason) 
          VALUES (UUID(), ?, ?, 'in', ?, 'Cancelación de venta')`,
-        [sale[0]?.branch_id, item.item_id, item.quantity]
+        [req.user.branch_id, item.item_id, item.quantity]
       );
     }
 
