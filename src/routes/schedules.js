@@ -7,11 +7,20 @@ const auth = require('../middleware/auth');
 // ============ BRANCH SCHEDULES ============
 
 // Obtener horario de sucursal
-router.get('/branch/:branch_id', async (req, res) => {
+router.get('/branch/:branch_id', auth, async (req, res) => {
   try {
+    // Validar que la sucursal pertenece a la cuenta
+    const [branch] = await db.query(
+      'SELECT id FROM branches WHERE id = ? AND account_id = ?',
+      [req.params.branch_id, req.user.account_id]
+    );
+
+    if (branch.length === 0) {
+      return res.status(404).json({ error: 'Sucursal no encontrada' });
+    }
+
     const [rows] = await db.query('SELECT * FROM branch_schedules WHERE branch_id = ?', [req.params.branch_id]);
     if (rows.length === 0) {
-      // Devolver horario por defecto
       return res.json({
         branch_id: req.params.branch_id,
         schedule: {
@@ -34,6 +43,16 @@ router.get('/branch/:branch_id', async (req, res) => {
 // Guardar/actualizar horario de sucursal
 router.put('/branch/:branch_id', auth, async (req, res) => {
   try {
+    // Validar que la sucursal pertenece a la cuenta
+    const [branch] = await db.query(
+      'SELECT id FROM branches WHERE id = ? AND account_id = ?',
+      [req.params.branch_id, req.user.account_id]
+    );
+
+    if (branch.length === 0) {
+      return res.status(404).json({ error: 'Sucursal no encontrada' });
+    }
+
     const { schedule } = req.body;
 
     const [existing] = await db.query('SELECT id FROM branch_schedules WHERE branch_id = ?', [req.params.branch_id]);
@@ -59,8 +78,18 @@ router.put('/branch/:branch_id', auth, async (req, res) => {
 // ============ STYLIST SCHEDULES ============
 
 // Obtener horario de profesional
-router.get('/stylist/:stylist_id', async (req, res) => {
+router.get('/stylist/:stylist_id', auth, async (req, res) => {
   try {
+    // Validar que el estilista pertenece a la cuenta
+    const [stylist] = await db.query(
+      'SELECT id FROM users WHERE id = ? AND account_id = ?',
+      [req.params.stylist_id, req.user.account_id]
+    );
+
+    if (stylist.length === 0) {
+      return res.status(404).json({ error: 'Profesional no encontrado' });
+    }
+
     const { branch_id } = req.query;
     let query = 'SELECT * FROM stylist_schedules WHERE stylist_id = ?';
     const params = [req.params.stylist_id];
@@ -80,22 +109,32 @@ router.get('/stylist/:stylist_id', async (req, res) => {
 // Guardar/actualizar horario de profesional
 router.put('/stylist/:stylist_id', auth, async (req, res) => {
   try {
+    // Validar que el estilista pertenece a la cuenta
+    const [stylist] = await db.query(
+      'SELECT id FROM users WHERE id = ? AND account_id = ?',
+      [req.params.stylist_id, req.user.account_id]
+    );
+
+    if (stylist.length === 0) {
+      return res.status(404).json({ error: 'Profesional no encontrado' });
+    }
+
     const { branch_id, schedule } = req.body;
 
     const [existing] = await db.query(
       'SELECT id FROM stylist_schedules WHERE stylist_id = ? AND branch_id = ?',
-      [req.params.stylist_id, branch_id]
+      [req.params.stylist_id, branch_id || req.user.branch_id]
     );
 
     if (existing.length > 0) {
       await db.query(
         'UPDATE stylist_schedules SET schedule = ? WHERE stylist_id = ? AND branch_id = ?',
-        [JSON.stringify(schedule), req.params.stylist_id, branch_id]
+        [JSON.stringify(schedule), req.params.stylist_id, branch_id || req.user.branch_id]
       );
     } else {
       await db.query(
         'INSERT INTO stylist_schedules (id, stylist_id, branch_id, schedule) VALUES (UUID(), ?, ?, ?)',
-        [req.params.stylist_id, branch_id, JSON.stringify(schedule)]
+        [req.params.stylist_id, branch_id || req.user.branch_id, JSON.stringify(schedule)]
       );
     }
 
@@ -107,27 +146,32 @@ router.put('/stylist/:stylist_id', auth, async (req, res) => {
 
 // ============ BLOCKED DAYS ============
 
-// Listar días bloqueados
-router.get('/blocked', async (req, res) => {
+// Listar días bloqueados (por cuenta)
+router.get('/blocked', auth, async (req, res) => {
   try {
     const { type, target_id, start_date, end_date } = req.query;
-    let query = 'SELECT * FROM blocked_days WHERE 1=1';
-    const params = [];
+    let query = `
+      SELECT bd.* FROM blocked_days bd
+      LEFT JOIN branches b ON bd.type = 'branch' AND bd.target_id = b.id
+      LEFT JOIN users u ON bd.type = 'stylist' AND bd.target_id = u.id
+      WHERE (b.account_id = ? OR u.account_id = ?)
+    `;
+    const params = [req.user.account_id, req.user.account_id];
 
     if (type) {
-      query += ' AND type = ?';
+      query += ' AND bd.type = ?';
       params.push(type);
     }
     if (target_id) {
-      query += ' AND target_id = ?';
+      query += ' AND bd.target_id = ?';
       params.push(target_id);
     }
     if (start_date && end_date) {
-      query += ' AND ((start_date BETWEEN ? AND ?) OR (end_date BETWEEN ? AND ?))';
+      query += ' AND ((bd.start_date BETWEEN ? AND ?) OR (bd.end_date BETWEEN ? AND ?))';
       params.push(start_date, end_date, start_date, end_date);
     }
 
-    query += ' ORDER BY start_date';
+    query += ' ORDER BY bd.start_date';
     const [rows] = await db.query(query, params);
     res.json(rows);
   } catch (error) {
@@ -139,6 +183,26 @@ router.get('/blocked', async (req, res) => {
 router.post('/blocked', auth, async (req, res) => {
   try {
     const { type, target_id, start_date, end_date, reason } = req.body;
+
+    // Validar que el target pertenece a la cuenta
+    if (type === 'branch') {
+      const [branch] = await db.query(
+        'SELECT id FROM branches WHERE id = ? AND account_id = ?',
+        [target_id, req.user.account_id]
+      );
+      if (branch.length === 0) {
+        return res.status(400).json({ error: 'Sucursal inválida' });
+      }
+    } else if (type === 'stylist') {
+      const [stylist] = await db.query(
+        'SELECT id FROM users WHERE id = ? AND account_id = ?',
+        [target_id, req.user.account_id]
+      );
+      if (stylist.length === 0) {
+        return res.status(400).json({ error: 'Profesional inválido' });
+      }
+    }
+
     const id = uuidv4();
 
     await db.query(
