@@ -6,7 +6,6 @@ const db = require('../config/database');
 const auth = require('../middleware/auth');
 const superadmin = require('../middleware/superadmin');
 
-// Todas las rutas requieren auth + superadmin
 router.use(auth);
 router.use(superadmin);
 
@@ -17,10 +16,19 @@ router.get('/accounts', async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT a.*, 
-             s.id as subscription_id, s.plan_id, s.status as subscription_status,
-             s.current_users, s.max_users, s.current_branches, s.max_branches,
-             s.trial_ends_at, s.ends_at,
-             p.name as plan_name, p.price_monthly,
+             s.id as subscription_id, 
+             s.plan_id, 
+             s.status as subscription_status,
+             s.billing_cycle,
+             s.current_users, 
+             s.max_users, 
+             s.current_branches, 
+             s.max_branches,
+             s.trial_ends_at, 
+             s.starts_at,
+             s.ends_at,
+             p.name as plan_name, 
+             p.price_monthly,
              (SELECT COUNT(*) FROM users WHERE account_id = a.id) as total_users,
              (SELECT COUNT(*) FROM branches WHERE account_id = a.id) as total_branches
       FROM accounts a
@@ -33,6 +41,7 @@ router.get('/accounts', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // Obtener una cuenta
 router.get('/accounts/:id', async (req, res) => {
