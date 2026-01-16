@@ -3,10 +3,14 @@ const router = express.Router();
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Obtener configuración
-router.get('/', async (req, res) => {
+// Obtener configuración (por cuenta)
+router.get('/', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM business_config LIMIT 1');
+    const [rows] = await db.query(
+      'SELECT * FROM business_config WHERE account_id = ?',
+      [req.user.account_id]
+    );
+
     if (rows.length === 0) {
       return res.json({
         type: 'salon',
@@ -16,7 +20,13 @@ router.get('/', async (req, res) => {
         ticket_fields: []
       });
     }
-    res.json(rows[0]);
+
+    const config = rows[0];
+    config.ticket_fields = typeof config.ticket_fields === 'string' 
+      ? JSON.parse(config.ticket_fields) 
+      : config.ticket_fields;
+
+    res.json(config);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -27,17 +37,20 @@ router.put('/', auth, async (req, res) => {
   try {
     const { type, name, phone, address, ticket_fields } = req.body;
 
-    const [existing] = await db.query('SELECT id FROM business_config LIMIT 1');
+    const [existing] = await db.query(
+      'SELECT id FROM business_config WHERE account_id = ?',
+      [req.user.account_id]
+    );
 
     if (existing.length > 0) {
       await db.query(
-        'UPDATE business_config SET type = ?, name = ?, phone = ?, address = ?, ticket_fields = ? WHERE id = ?',
-        [type, name, phone, address, JSON.stringify(ticket_fields || []), existing[0].id]
+        'UPDATE business_config SET type = ?, name = ?, phone = ?, address = ?, ticket_fields = ? WHERE account_id = ?',
+        [type, name, phone, address, JSON.stringify(ticket_fields || []), req.user.account_id]
       );
     } else {
       await db.query(
-        'INSERT INTO business_config (id, type, name, phone, address, ticket_fields) VALUES (UUID(), ?, ?, ?, ?, ?)',
-        [type, name, phone, address, JSON.stringify(ticket_fields || [])]
+        'INSERT INTO business_config (id, account_id, type, name, phone, address, ticket_fields) VALUES (UUID(), ?, ?, ?, ?, ?, ?)',
+        [req.user.account_id, type, name, phone, address, JSON.stringify(ticket_fields || [])]
       );
     }
 
