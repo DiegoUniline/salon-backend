@@ -4,22 +4,18 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Listar turnos
-router.get('/', async (req, res) => {
+// Listar turnos (por sucursal)
+router.get('/', auth, async (req, res) => {
   try {
-    const { branch_id, status, date, start_date, end_date } = req.query;
+    const { status, date, start_date, end_date } = req.query;
     let query = `
       SELECT s.*, u.name as user_name 
       FROM shifts s 
       LEFT JOIN users u ON s.user_id = u.id 
-      WHERE 1=1
+      WHERE s.branch_id = ?
     `;
-    const params = [];
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += ' AND s.branch_id = ?';
-      params.push(branch_id);
-    }
     if (status) {
       query += ' AND s.status = ?';
       params.push(status);
@@ -41,17 +37,16 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Obtener turno abierto
-router.get('/open', async (req, res) => {
+// Obtener turno abierto (por sucursal)
+router.get('/open', auth, async (req, res) => {
   try {
-    const { branch_id } = req.query;
     const [rows] = await db.query(
       `SELECT s.*, u.name as user_name 
        FROM shifts s 
        LEFT JOIN users u ON s.user_id = u.id 
        WHERE s.branch_id = ? AND s.status = 'open' 
        ORDER BY s.created_at DESC LIMIT 1`,
-      [branch_id]
+      [req.user.branch_id]
     );
     
     if (rows.length === 0) {
@@ -63,15 +58,15 @@ router.get('/open', async (req, res) => {
   }
 });
 
-// Obtener un turno
-router.get('/:id', async (req, res) => {
+// Obtener un turno (validar sucursal)
+router.get('/:id', auth, async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT s.*, u.name as user_name 
        FROM shifts s 
        LEFT JOIN users u ON s.user_id = u.id 
-       WHERE s.id = ?`,
-      [req.params.id]
+       WHERE s.id = ? AND s.branch_id = ?`,
+      [req.params.id, req.user.branch_id]
     );
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Turno no encontrado' });
@@ -85,9 +80,9 @@ router.get('/:id', async (req, res) => {
 // Abrir turno
 router.post('/open', auth, async (req, res) => {
   try {
-    const { branch_id, user_id, initial_cash } = req.body;
+    const { initial_cash } = req.body;
+    const branch_id = req.user.branch_id;
 
-    // Verificar si ya hay turno abierto
     const [existing] = await db.query(
       "SELECT id FROM shifts WHERE branch_id = ? AND status = 'open'",
       [branch_id]
@@ -104,10 +99,10 @@ router.post('/open', auth, async (req, res) => {
     await db.query(
       `INSERT INTO shifts (id, branch_id, user_id, date, start_time, initial_cash, status) 
        VALUES (?, ?, ?, ?, ?, ?, 'open')`,
-      [id, branch_id, user_id, date, time, initial_cash]
+      [id, branch_id, req.user.user_id, date, time, initial_cash]
     );
 
-    res.status(201).json({ id, branch_id, user_id, date, start_time: time, initial_cash, status: 'open' });
+    res.status(201).json({ id, branch_id, user_id: req.user.user_id, date, start_time: time, initial_cash, status: 'open' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -117,11 +112,21 @@ router.post('/open', auth, async (req, res) => {
 router.post('/:id/close', auth, async (req, res) => {
   try {
     const { final_cash } = req.body;
+
+    const [existing] = await db.query(
+      "SELECT id FROM shifts WHERE id = ? AND branch_id = ?",
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Turno no encontrado' });
+    }
+
     const time = new Date().toTimeString().split(' ')[0];
 
     await db.query(
-      "UPDATE shifts SET end_time = ?, final_cash = ?, status = 'closed' WHERE id = ?",
-      [time, final_cash, req.params.id]
+      "UPDATE shifts SET end_time = ?, final_cash = ?, status = 'closed' WHERE id = ? AND branch_id = ?",
+      [time, final_cash, req.params.id, req.user.branch_id]
     );
 
     res.json({ message: 'Turno cerrado exitosamente' });
@@ -130,10 +135,13 @@ router.post('/:id/close', auth, async (req, res) => {
   }
 });
 
-// Resumen del turno (para corte de caja)
-router.get('/:id/summary', async (req, res) => {
+// Resumen del turno
+router.get('/:id/summary', auth, async (req, res) => {
   try {
-    const [shift] = await db.query('SELECT * FROM shifts WHERE id = ?', [req.params.id]);
+    const [shift] = await db.query(
+      'SELECT * FROM shifts WHERE id = ? AND branch_id = ?',
+      [req.params.id, req.user.branch_id]
+    );
     
     if (shift.length === 0) {
       return res.status(404).json({ error: 'Turno no encontrado' });
@@ -141,7 +149,6 @@ router.get('/:id/summary', async (req, res) => {
 
     const { branch_id, date } = shift[0];
 
-    // Ventas del día
     const [salesByMethod] = await db.query(`
       SELECT p.method, SUM(p.amount) as total 
       FROM payments p 
@@ -150,7 +157,6 @@ router.get('/:id/summary', async (req, res) => {
       GROUP BY p.method
     `, [branch_id, date]);
 
-    // Citas completadas
     const [appointmentsByMethod] = await db.query(`
       SELECT p.method, SUM(p.amount) as total 
       FROM payments p 
@@ -159,7 +165,6 @@ router.get('/:id/summary', async (req, res) => {
       GROUP BY p.method
     `, [branch_id, date]);
 
-    // Gastos del día
     const [expensesByMethod] = await db.query(`
       SELECT payment_method as method, SUM(amount) as total 
       FROM expenses 
@@ -167,7 +172,6 @@ router.get('/:id/summary', async (req, res) => {
       GROUP BY payment_method
     `, [branch_id, date]);
 
-    // Compras del día
     const [purchasesByMethod] = await db.query(`
       SELECT p.method, SUM(p.amount) as total 
       FROM payments p 
@@ -176,7 +180,6 @@ router.get('/:id/summary', async (req, res) => {
       GROUP BY p.method
     `, [branch_id, date]);
 
-    // Totales
     const [totals] = await db.query(`
       SELECT 
         (SELECT COALESCE(SUM(total), 0) FROM sales WHERE branch_id = ? AND date = ?) +
@@ -186,7 +189,6 @@ router.get('/:id/summary', async (req, res) => {
         (SELECT COUNT(*) FROM appointments WHERE branch_id = ? AND date = ? AND status = 'completed') as completed_appointments
     `, [branch_id, date, branch_id, date, branch_id, date, branch_id, date, branch_id, date]);
 
-    // Combinar ventas de sales y appointments
     const combinedSales = {};
     [...salesByMethod, ...appointmentsByMethod].forEach(item => {
       combinedSales[item.method] = (combinedSales[item.method] || 0) + parseFloat(item.total);
@@ -202,7 +204,6 @@ router.get('/:id/summary', async (req, res) => {
       purchasesObj[item.method] = parseFloat(item.total);
     });
 
-    // Calcular esperado por método
     const expectedByMethod = {};
     ['cash', 'card', 'transfer'].forEach(method => {
       const sales = combinedSales[method] || 0;
@@ -211,7 +212,6 @@ router.get('/:id/summary', async (req, res) => {
       expectedByMethod[method] = sales - expenses - purchases;
     });
 
-    // Agregar efectivo inicial al esperado en efectivo
     expectedByMethod.cash = (expectedByMethod.cash || 0) + parseFloat(shift[0].initial_cash || 0);
 
     res.json({
