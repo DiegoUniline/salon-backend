@@ -4,17 +4,13 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// Listar gastos
-router.get('/', async (req, res) => {
+// Listar gastos (por sucursal)
+router.get('/', auth, async (req, res) => {
   try {
-    const { branch_id, category, date, start_date, end_date } = req.query;
-    let query = 'SELECT * FROM expenses WHERE 1=1';
-    const params = [];
+    const { category, date, start_date, end_date } = req.query;
+    let query = 'SELECT * FROM expenses WHERE branch_id = ?';
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += ' AND branch_id = ?';
-      params.push(branch_id);
-    }
     if (category) {
       query += ' AND category = ?';
       params.push(category);
@@ -36,27 +32,26 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Obtener categorías
-router.get('/categories', async (req, res) => {
+// Obtener categorías (por sucursal)
+router.get('/categories', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT DISTINCT category FROM expenses WHERE category IS NOT NULL ORDER BY category');
+    const [rows] = await db.query(
+      'SELECT DISTINCT category FROM expenses WHERE branch_id = ? AND category IS NOT NULL ORDER BY category',
+      [req.user.branch_id]
+    );
     res.json(rows.map(r => r.category));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Resumen por categoría
-router.get('/summary', async (req, res) => {
+// Resumen por categoría (por sucursal)
+router.get('/summary', auth, async (req, res) => {
   try {
-    const { branch_id, start_date, end_date } = req.query;
-    let query = 'SELECT category, SUM(amount) as total FROM expenses WHERE 1=1';
-    const params = [];
+    const { start_date, end_date } = req.query;
+    let query = 'SELECT category, SUM(amount) as total FROM expenses WHERE branch_id = ?';
+    const params = [req.user.branch_id];
 
-    if (branch_id) {
-      query += ' AND branch_id = ?';
-      params.push(branch_id);
-    }
     if (start_date && end_date) {
       query += ' AND date BETWEEN ? AND ?';
       params.push(start_date, end_date);
@@ -70,10 +65,13 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-// Obtener un gasto
-router.get('/:id', async (req, res) => {
+// Obtener un gasto (validar sucursal)
+router.get('/:id', auth, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM expenses WHERE id = ?', [req.params.id]);
+    const [rows] = await db.query(
+      'SELECT * FROM expenses WHERE id = ? AND branch_id = ?',
+      [req.params.id, req.user.branch_id]
+    );
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Gasto no encontrado' });
     }
@@ -86,8 +84,9 @@ router.get('/:id', async (req, res) => {
 // Crear gasto
 router.post('/', auth, async (req, res) => {
   try {
-    const { branch_id, date, category, description, amount, payment_method, supplier, notes } = req.body;
+    const { date, category, description, amount, payment_method, supplier, notes } = req.body;
     const id = uuidv4();
+    const branch_id = req.user.branch_id;
 
     await db.query(
       `INSERT INTO expenses (id, branch_id, date, category, description, amount, payment_method, supplier, notes) 
@@ -106,11 +105,15 @@ router.put('/:id', auth, async (req, res) => {
   try {
     const { date, category, description, amount, payment_method, supplier, notes } = req.body;
 
-    await db.query(
+    const [result] = await db.query(
       `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, 
-       payment_method = ?, supplier = ?, notes = ? WHERE id = ?`,
-      [date, category, description, amount, payment_method, supplier, notes, req.params.id]
+       payment_method = ?, supplier = ?, notes = ? WHERE id = ? AND branch_id = ?`,
+      [date, category, description, amount, payment_method, supplier, notes, req.params.id, req.user.branch_id]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Gasto no encontrado' });
+    }
 
     res.json({ id: req.params.id, date, category, description, amount, payment_method, supplier, notes });
   } catch (error) {
@@ -121,7 +124,15 @@ router.put('/:id', auth, async (req, res) => {
 // Eliminar gasto
 router.delete('/:id', auth, async (req, res) => {
   try {
-    await db.query('DELETE FROM expenses WHERE id = ?', [req.params.id]);
+    const [result] = await db.query(
+      'DELETE FROM expenses WHERE id = ? AND branch_id = ?',
+      [req.params.id, req.user.branch_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Gasto no encontrado' });
+    }
+
     res.json({ message: 'Gasto eliminado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
