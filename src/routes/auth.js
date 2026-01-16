@@ -9,7 +9,6 @@ const auth = require('../middleware/auth');
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
     const [users] = await db.query(
       'SELECT * FROM users WHERE email = ? AND active = 1',
       [email]
@@ -21,26 +20,33 @@ router.post('/login', async (req, res) => {
 
     const user = users[0];
     const validPassword = await bcrypt.compare(password, user.password_hash || '');
-
+    
     if (!validPassword) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
     const token = uuidv4();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 horas
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     await db.query(
       'INSERT INTO sessions (id, user_id, token, expires_at) VALUES (UUID(), ?, ?, ?)',
       [user.id, token, expiresAt]
     );
 
-    // Obtener permisos del usuario
+    // Obtener rol y permisos del usuario
     const [roles] = await db.query(
-      `SELECT r.permissions FROM user_roles ur 
+      `SELECT r.name as role_name, r.permissions FROM user_roles ur 
        JOIN roles r ON ur.role_id = r.id 
        WHERE ur.user_id = ? AND ur.active = 1`,
       [user.id]
     );
+
+    let permissions = {};
+    if (roles[0]?.permissions) {
+      permissions = typeof roles[0].permissions === 'string' 
+        ? JSON.parse(roles[0].permissions) 
+        : roles[0].permissions;
+    }
 
     res.json({
       token,
@@ -48,11 +54,11 @@ router.post('/login', async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role,
+        role: roles[0]?.role_name || user.role,
         branch_id: user.branch_id,
         color: user.color,
         avatar_url: user.avatar_url,
-        permissions: roles[0]?.permissions || {}
+        permissions
       }
     });
   } catch (error) {
@@ -84,26 +90,33 @@ router.get('/me', auth, async (req, res) => {
     }
 
     const [roles] = await db.query(
-      `SELECT r.permissions FROM user_roles ur 
+      `SELECT r.name as role_name, r.permissions FROM user_roles ur 
        JOIN roles r ON ur.role_id = r.id 
        WHERE ur.user_id = ? AND ur.active = 1`,
       [req.user.user_id]
     );
 
+    let permissions = {};
+    if (roles[0]?.permissions) {
+      permissions = typeof roles[0].permissions === 'string' 
+        ? JSON.parse(roles[0].permissions) 
+        : roles[0].permissions;
+    }
+
     res.json({
       ...users[0],
-      permissions: roles[0]?.permissions || {}
+      role: roles[0]?.role_name || users[0].role,
+      permissions
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Registrar usuario (solo admin)
+// Registrar usuario
 router.post('/register', async (req, res) => {
   try {
     const { name, email, password, role, branch_id, color } = req.body;
-
     const passwordHash = await bcrypt.hash(password, 10);
     const id = uuidv4();
 
