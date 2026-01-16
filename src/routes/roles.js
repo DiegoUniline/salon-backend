@@ -4,12 +4,12 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const auth = require('../middleware/auth');
 
-// GET - Roles de la sucursal
+// GET - Roles de la cuenta
 router.get('/', auth, async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM roles WHERE branch_id = ? ORDER BY name',
-      [req.user.branch_id]
+      'SELECT * FROM roles WHERE account_id = ? ORDER BY name',
+      [req.user.account_id]
     );
     res.json(rows);
   } catch (error) {
@@ -20,8 +20,8 @@ router.get('/', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM roles WHERE id = ? AND branch_id = ?',
-      [req.params.id, req.user.branch_id]
+      'SELECT * FROM roles WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
     );
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Rol no encontrado' });
@@ -38,8 +38,8 @@ router.post('/', auth, async (req, res) => {
     const id = uuidv4();
 
     await db.query(
-      'INSERT INTO roles (id, name, description, color, permissions, branch_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, name, description, color || '#3B82F6', JSON.stringify(permissions), req.user.branch_id]
+      'INSERT INTO roles (id, name, description, color, permissions, account_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, name, description, color || '#3B82F6', JSON.stringify(permissions), req.user.account_id]
     );
 
     res.status(201).json({ id, name, description, color: color || '#3B82F6', permissions });
@@ -56,8 +56,8 @@ router.put('/:id', auth, async (req, res) => {
     const { name, description, color, permissions } = req.body;
 
     const [role] = await db.query(
-      'SELECT * FROM roles WHERE id = ? AND branch_id = ?',
-      [req.params.id, req.user.branch_id]
+      'SELECT * FROM roles WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
     );
     
     if (role.length === 0) {
@@ -65,8 +65,8 @@ router.put('/:id', auth, async (req, res) => {
     }
 
     await db.query(
-      'UPDATE roles SET name = ?, description = ?, color = ?, permissions = ? WHERE id = ? AND branch_id = ?',
-      [name, description, color, JSON.stringify(permissions), req.params.id, req.user.branch_id]
+      'UPDATE roles SET name = ?, description = ?, color = ?, permissions = ? WHERE id = ? AND account_id = ?',
+      [name, description, color, JSON.stringify(permissions), req.params.id, req.user.account_id]
     );
 
     res.json({ id: req.params.id, name, description, color, permissions });
@@ -81,8 +81,8 @@ router.put('/:id', auth, async (req, res) => {
 router.post('/:id/duplicate', auth, async (req, res) => {
   try {
     const [role] = await db.query(
-      'SELECT * FROM roles WHERE id = ? AND branch_id = ?',
-      [req.params.id, req.user.branch_id]
+      'SELECT * FROM roles WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
     );
     if (role.length === 0) {
       return res.status(404).json({ error: 'Rol no encontrado' });
@@ -92,8 +92,8 @@ router.post('/:id/duplicate', auth, async (req, res) => {
     const newName = `${role[0].name} (copia)`;
 
     await db.query(
-      'INSERT INTO roles (id, name, description, color, permissions, branch_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, newName, role[0].description, role[0].color, role[0].permissions, req.user.branch_id]
+      'INSERT INTO roles (id, name, description, color, permissions, account_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, newName, role[0].description, role[0].color, role[0].permissions, req.user.account_id]
     );
 
     res.status(201).json({ 
@@ -111,8 +111,8 @@ router.post('/:id/duplicate', auth, async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
   try {
     const [role] = await db.query(
-      'SELECT * FROM roles WHERE id = ? AND branch_id = ?',
-      [req.params.id, req.user.branch_id]
+      'SELECT * FROM roles WHERE id = ? AND account_id = ?',
+      [req.params.id, req.user.account_id]
     );
     if (role.length === 0) {
       return res.status(404).json({ error: 'Rol no encontrado' });
@@ -123,7 +123,7 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(400).json({ error: `No se puede eliminar: ${users[0].count} usuario(s) asignados` });
     }
 
-    await db.query('DELETE FROM roles WHERE id = ? AND branch_id = ?', [req.params.id, req.user.branch_id]);
+    await db.query('DELETE FROM roles WHERE id = ? AND account_id = ?', [req.params.id, req.user.account_id]);
     res.json({ message: 'Rol eliminado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -135,13 +135,13 @@ router.delete('/:id', auth, async (req, res) => {
 router.get('/users/list', auth, async (req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT u.id, u.name, u.email, u.active, ur.role_id, r.name as role_name, r.color as role_color, ur.branch_id
+      SELECT u.id, u.name, u.email, u.active, u.branch_id, ur.role_id, r.name as role_name, r.color as role_color
       FROM users u
       LEFT JOIN user_roles ur ON u.id = ur.user_id
       LEFT JOIN roles r ON ur.role_id = r.id
-      WHERE u.branch_id = ?
+      WHERE u.account_id = ?
       ORDER BY u.name
-    `, [req.user.branch_id]);
+    `, [req.user.account_id]);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -153,8 +153,8 @@ router.post('/users/assign', auth, async (req, res) => {
     const { user_id, role_id, branch_id } = req.body;
 
     const [role] = await db.query(
-      'SELECT id FROM roles WHERE id = ? AND branch_id = ?', 
-      [role_id, req.user.branch_id]
+      'SELECT id FROM roles WHERE id = ? AND account_id = ?', 
+      [role_id, req.user.account_id]
     );
     if (role.length === 0) {
       return res.status(400).json({ error: 'Rol inválido' });
