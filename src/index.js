@@ -14,6 +14,7 @@ const appointmentsRoutes = require('./routes/appointments');
 const salesRoutes = require('./routes/sales');
 const expensesRoutes = require('./routes/expenses');
 const purchasesRoutes = require('./routes/purchases');
+const suppliersRoutes = require('./routes/suppliers');
 const inventoryRoutes = require('./routes/inventory');
 const shiftsRoutes = require('./routes/shifts');
 const cashCutsRoutes = require('./routes/cashCuts');
@@ -27,7 +28,6 @@ const accountsRoutes = require('./routes/accounts');
 const adminRoutes = require('./routes/admin');
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
@@ -57,6 +57,7 @@ app.use('/api/appointments', appointmentsRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/purchases', purchasesRoutes);
+app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/shifts', shiftsRoutes);
 app.use('/api/cash-cuts', cashCutsRoutes);
